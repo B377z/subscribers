@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Email Subscribe</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- Simple styles just for clarity -->
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        max-width: 540px;
+        margin: 4rem auto;
+        padding: 0 1rem;
+      }
+      form {
+        display: grid;
+        gap: 0.75rem;
+      }
+      input[type="text"],
+      input[type="email"] {
+        padding: 0.6rem;
+        font-size: 1rem;
+      }
+      button {
+        padding: 0.6rem;
+        font-size: 1rem;
+        cursor: pointer;
+      }
+      .flash {
+        padding: 0.6rem;
+        margin: 0.5rem 0;
+        border-radius: 6px;
+      }
+      .flash.error {
+        background: #ffe5e5;
+      }
+      .flash.success {
+        background: #e8ffe8;
+      }
+      .flash.info {
+        background: #e8f0ff;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Subscribe to updates</h1>
+
+    <!-- Flask's flashed messages -->
+    {% with messages = get_flashed_messages(with_categories=true) %} {% if
+    messages %} {% for category, message in messages %}
+    <div class="flash {{ category }}">{{ message }}</div>
+    {% endfor %} {% endif %} {% endwith %}
+
+    <!-- CSRF token is auto-included by Flask-WTF when using form.hidden_tag() -->
+    <form action="{{ url_for('subscribe') }}" method="post" novalidate>
+      {{ form.hidden_tag() }}
+
+      <label for="email">{{ form.email.label }}</label>
+      <!-- WTForms renders the input; type="text" is fine, HTML5 email type optional -->
+      {{ form.email(size=40, id="email") }} {{ form.submit() }}
+    </form>
+
+    <!-- Tiny UX nicety: focus the email field -->
+    <script>
+      document.getElementById("email").focus();
+    </script>
+  </body>
+</html>
