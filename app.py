@@ -7,6 +7,7 @@ A minimal flask app with:
 """
 
 from __future__ import annotations  # allows annotations to be treated as strings
+from logging_config import setup_json_file_logger, new_request_id
 import os
 from datetime import datetime
 
@@ -26,6 +27,7 @@ load_dotenv()
 # --- Flask app setup
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "your_secret_key")  # Replace with a secure key in production
+log = setup_json_file_logger("subscriber_app")
 
 # --- Database setup
 DB_DIALECT = os.getenv("DB_DIALECT", "sqlite")
@@ -86,6 +88,29 @@ class SubscriberForm(FlaskForm):
     submit = SubmitField("Subscribe")
     
 # --- Routes
+@app.before_request
+def attach_request_id():
+    request.request_id = new_request_id()
+
+@app.after_request
+def log_request(response):
+    # Build a structured request log event
+    log.info(
+        "http_request",
+        extra={
+            "extra": {
+                "event": "http_request",
+                "request_id": getattr(request, "request_id", None),
+                "method": request.method,
+                "path": request.path,
+                "status_code": response.status_code,
+                "remote_addr": request.headers.get("X-Forwarded-For", request.remote_addr),
+                "user_agent": request.headers.get("User-Agent"),
+            }
+        },
+    )
+    return response
+
 @app.get("/")
 def index():
     """
@@ -100,28 +125,89 @@ def subscribe():
     Handle form submission on POST /subscribe
     """
     form = SubscriberForm()
+
+    # 1) Validate input
     if not form.validate_on_submit():
-        # flash() stores a message for the next request; requires secret key
+        log.info(
+            "subscribe_rejected",
+            extra={
+                "extra": {
+                    "event": "subscribe_rejected",
+                    "request_id": getattr(request, "request_id", None),
+                    "reason": "validation_failed",
+                    "errors": form.errors,  # shows which field failed
+                }
+            },
+        )
         flash("Invalid email address. Please try again.", "error")
-        return render_template("index.html", form=form), 400  # Bad Request
-    
-    email = form.email.data.strip().lower()  # Normalize email
-    
-    # Use a Session form ORM work; it's a unit of work pattern
+        return render_template("index.html", form=form), 400
+
+    email = form.email.data.strip().lower()
+
+    log.info(
+        "subscribe_attempt",
+        extra={
+            "extra": {
+                "event": "subscribe_attempt",
+                "request_id": request.request_id,
+                "email": email,
+            }
+        },
+    )
+
+    # 2) DB work
     with Session(engine) as session:
-        # Check if email already exists
         exists = session.query(Subscriber).filter(Subscriber.email == email).first()
+
         if exists:
-            flash("This email already subscribed.", "info")
-        else:
-            # Create new Subscriber instance
+            log.info(
+                "subscribe_duplicate",
+                extra={
+                    "extra": {
+                        "event": "subscribe_duplicate",
+                        "request_id": request.request_id,
+                        "email": email,
+                    }
+                },
+            )
+            flash("This email is already subscribed.", "info")
+            return redirect(url_for("index"))
+
+        try:
             sub = Subscriber(email=email)
-            session.add(sub)  # Stage for insert
-            session.commit()  # Commit transaction
+            session.add(sub)
+            session.commit()
+
+            log.info(
+                "subscribe_success",
+                extra={
+                    "extra": {
+                        "event": "subscribe_success",
+                        "request_id": request.request_id,
+                        "email": email,
+                    }
+                },
+            )
             flash("Subscription successful! Thank you.", "success")
-    
-    # PRG pattern: Post/Redirect/Get avoids form resubmission prompts       
+
+        except Exception as e:
+            session.rollback()
+            log.info(
+                "subscribe_db_error",
+                extra={
+                    "extra": {
+                        "event": "subscribe_db_error",
+                        "request_id": request.request_id,
+                        "email": email,
+                        "error": str(e),
+                    }
+                },
+            )
+            flash("Something went wrong saving your subscription.", "error")
+            return render_template("index.html", form=form), 500
+
     return redirect(url_for("index"))
+
 
 @app.get("/subscribers")
 def list_subscribers():
@@ -130,6 +216,16 @@ def list_subscribers():
             select(Subscriber).order_by(Subscriber.created_at.desc())
         ).scalars().all()
     return render_template("subscribers.html", rows=rows)
+
+@app.get("/health")
+def health():
+    # You can later add DB check if you want (optional)
+    log.info(
+        "health_check",
+        extra={"extra": {"event": "health_check", "request_id": getattr(request, "request_id", None), "status": "ok"}},
+    )
+    return {"status": "ok"}, 200
+
 
 # --- Entrypoint
 if __name__ == "__main__":
