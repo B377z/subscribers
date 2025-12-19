@@ -28,19 +28,25 @@ app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "your_secret_key")  # Replace with a secure key in production
 
 # --- Database setup
+DB_DIALECT = os.getenv("DB_DIALECT", "sqlite")
+
 DB_USER = os.getenv("DB_USER", "dbadmin")
 DB_PASS = os.getenv("DB_PASS", "AdminP@ssw0rd!")
 DB_HOST = os.getenv("DB_HOST", "127.0.0.1")
 DB_NAME = os.getenv("DB_NAME", "subscribers_db")
 
 # SQLAAlchemy URL format:
-db_url = URL.create(
-    "mysql+pymysql",  # or 'mysql+mysqldb' if using mysqlclient
-    username=DB_USER,
-    password=DB_PASS,
-    host=DB_HOST,
-    database=DB_NAME,
-)
+if DB_DIALECT == "mysql":
+    db_url = URL.create(
+        "mysql+pymysql",  # or 'mysql+mysqldb' if using mysqlclient
+        username=DB_USER,
+        password=DB_PASS,
+        host=DB_HOST,
+        database=DB_NAME,
+    )
+else:
+    # Default to SQLite for simplicity
+    db_url = "sqlite:///subscribers.db"
 
 engine = create_engine(db_url, echo=False, pool_pre_ping=True)
 
@@ -66,7 +72,8 @@ class Subscriber(Base):
     
     
 # --- Create tables if they don't exist
-Base.metadata.create_all(bind=engine)
+def init_db():
+    Base.metadata.create_all(bind=engine)
 
 # --- Flask-WTF form class for email submission
 class SubscriberForm(FlaskForm):
@@ -126,5 +133,7 @@ def list_subscribers():
 
 # --- Entrypoint
 if __name__ == "__main__":
+    init_db()  # Ensure DB tables exist
+    # Note: Do not use app.run() in production; this is only for
     # Flask's dev server; in production use gunicorn/uwsgi
     app.run(host="0.0.0.0", port=5000, debug=True)
