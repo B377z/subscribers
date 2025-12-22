@@ -2,125 +2,117 @@
 A minimal flask app with:
 - An HTML form to collect an email
 - Server-side validation
-- SQLAlchemy model mapped to a MySQL table
-- Comments explaining Python/Flask/SQLAlchemy code
+- SQLAlchemy model mapped to a DB table (SQLite by default, MySQL optional)
 """
 
-from __future__ import annotations  # allows annotations to be treated as strings
+from __future__ import annotations
+
 import os
+import logging
 from datetime import datetime
 
-from sqlalchemy import select
-from flask import Flask, render_template, request, redirect, url_for, flash
+from dotenv import load_dotenv
+from flask import Flask, render_template, redirect, url_for, flash
 from flask_wtf import FlaskForm
+from sqlalchemy import String, DateTime, create_engine, select
+from sqlalchemy.engine import URL
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 from wtforms import StringField, SubmitField
 from wtforms.validators import DataRequired, Email
-from sqlalchemy import create_engine, Column, Integer, String, DateTime
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, Session
-from sqlalchemy.engine import URL
-from dotenv import load_dotenv
 
-# --- Load Environment variables from .env in dev
+from azure.monitor.opentelemetry import configure_azure_monitor
+
+# --- Load environment variables from .env (dev convenience)
 load_dotenv()
+
+# --- Logging: make sure logs go to stdout (Docker/VM-friendly)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("subscriber-app")
+
+# --- Optional: Azure Monitor / App Insights telemetry
+# Requires APPLICATIONINSIGHTS_CONNECTION_STRING
+if os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING"):
+    try:
+      configure_azure_monitor()
+      logger.info("Azure Monitor telemetry enabled")
+    except Exception as e:
+      logger.error("Failed to enable Azure Monitor telemetry: %s", e)
+else:
+    logger.warning("APPLICATIONINSIGHTS_CONNECTION_STRING not set; telemetry disabled")
 
 # --- Flask app setup
 app = Flask(__name__)
-app.secret_key = os.getenv("SECRET_KEY", "your_secret_key")  # Replace with a secure key in production
+app.secret_key = os.getenv("SECRET_KEY", "dev-only-insecure-secret-key")
 
 # --- Database setup
-DB_DIALECT = os.getenv("DB_DIALECT", "sqlite")
+DB_DIALECT = os.getenv("DB_DIALECT", "sqlite").lower()
 
 DB_USER = os.getenv("DB_USER", "dbadmin")
 DB_PASS = os.getenv("DB_PASS", "AdminP@ssw0rd!")
 DB_HOST = os.getenv("DB_HOST", "127.0.0.1")
 DB_NAME = os.getenv("DB_NAME", "subscribers_db")
 
-# SQLAAlchemy URL format:
 if DB_DIALECT == "mysql":
     db_url = URL.create(
-        "mysql+pymysql",  # or 'mysql+mysqldb' if using mysqlclient
+        drivername="mysql+pymysql",
         username=DB_USER,
         password=DB_PASS,
         host=DB_HOST,
         database=DB_NAME,
     )
-else:
-    # Default to SQLite for simplicity
+elif DB_DIALECT == "sqlite":
     db_url = "sqlite:///subscribers.db"
+else:
+    raise ValueError(f"Unsupported DB_DIALECT: {DB_DIALECT}")
 
 engine = create_engine(db_url, echo=False, pool_pre_ping=True)
 
-# --- SQLAlchemy ORM base class
 class Base(DeclarativeBase):
     pass
 
-# --- SQLAlchemy ORM model for the subscribers table
 class Subscriber(Base):
-    """
-    A simple table:
-      id          INT primary key (auto)
-      email       VARCHAR(320) unique
-      created_at  DATETIME
-    """
     __tablename__ = "subscribers"
-    
-    # Mapped[int] tells SQLAlchemy + type checkers the attribute is mapped to a column of int
+
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    # String(320) because RFC suggests emails max ~320 chars (local+domain)
     email: Mapped[str] = mapped_column(String(320), unique=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
-    
-    
-# --- Create tables if they don't exist
-def init_db():
+
+def init_db() -> None:
     Base.metadata.create_all(bind=engine)
 
-# --- Flask-WTF form class for email submission
 class SubscriberForm(FlaskForm):
-    """
-    WTForms defines fields & validators declaratively:
-    - DataRequired() ensures field is not empty
-    - Email() checks for valid email format
-    """
     email = StringField("Email", validators=[DataRequired(), Email()])
     submit = SubmitField("Subscribe")
-    
-# --- Routes
+
 @app.get("/")
 def index():
-    """
-    Render the subscription form on GET /
-    """
     form = SubscriberForm()
     return render_template("index.html", form=form)
 
 @app.post("/subscribe")
 def subscribe():
-    """
-    Handle form submission on POST /subscribe
-    """
     form = SubscriberForm()
+
     if not form.validate_on_submit():
-        # flash() stores a message for the next request; requires secret key
+        logger.info("subscribe_invalid")
         flash("Invalid email address. Please try again.", "error")
-        return render_template("index.html", form=form), 400  # Bad Request
-    
-    email = form.email.data.strip().lower()  # Normalize email
-    
-    # Use a Session form ORM work; it's a unit of work pattern
+        return render_template("index.html", form=form), 400
+
+    email = form.email.data.strip().lower()
+    logger.info("subscribe_valid email=%s", email)
+
     with Session(engine) as session:
-        # Check if email already exists
-        exists = session.query(Subscriber).filter(Subscriber.email == email).first()
-        if exists:
-            flash("This email already subscribed.", "info")
+        existing = session.execute(
+            select(Subscriber).where(Subscriber.email == email)
+        ).scalar_one_or_none()
+
+        if existing:
+            flash("This email is already subscribed.", "info")
         else:
-            # Create new Subscriber instance
-            sub = Subscriber(email=email)
-            session.add(sub)  # Stage for insert
-            session.commit()  # Commit transaction
+            session.add(Subscriber(email=email))
+            session.commit()
             flash("Subscription successful! Thank you.", "success")
-    
-    # PRG pattern: Post/Redirect/Get avoids form resubmission prompts       
+
     return redirect(url_for("index"))
 
 @app.get("/subscribers")
@@ -129,11 +121,9 @@ def list_subscribers():
         rows = session.execute(
             select(Subscriber).order_by(Subscriber.created_at.desc())
         ).scalars().all()
+
     return render_template("subscribers.html", rows=rows)
 
-# --- Entrypoint
 if __name__ == "__main__":
-    init_db()  # Ensure DB tables exist
-    # Note: Do not use app.run() in production; this is only for
-    # Flask's dev server; in production use gunicorn/uwsgi
+    init_db()
     app.run(host="0.0.0.0", port=5000, debug=True)

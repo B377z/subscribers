@@ -6,15 +6,40 @@ services:
     container_name: subscribers_mysql
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: Str0ngP@ssw0rd!
-      MYSQL_DATABASE: subscribers_db
-      MYSQL_USER: dbadmin
-      MYSQL_PASSWORD: AdminP@ssw0rd!
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
     ports:
       - "3306:3306"
     command: ["--default-authentication-plugin=mysql_native_password"]
     volumes:
       - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-u", "${MYSQL_USER}", "-p${MYSQL_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    container_name: subscriber_flask
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      SECRET_KEY: ${SECRET_KEY}
+
+      DB_DIALECT: mysql
+      DB_USER: ${MYSQL_USER}
+      DB_PASS: ${MYSQL_PASSWORD}
+      DB_HOST: db
+      DB_NAME: ${MYSQL_DATABASE}
+
+      APPLICATIONINSIGHTS_CONNECTION_STRING: ${APPLICATIONINSIGHTS_CONNECTION_STRING}
+    ports:
+      - "5000:5000"
 
 volumes:
   mysql_data:
