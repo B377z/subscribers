@@ -8,13 +8,14 @@ A minimal flask app with:
 from __future__ import annotations
 
 import os
+import time
 import logging
 from datetime import datetime
 
 from dotenv import load_dotenv
 from flask import Flask, render_template, redirect, url_for, flash
 from flask_wtf import FlaskForm
-from sqlalchemy import String, DateTime, create_engine, select
+from sqlalchemy import String, DateTime, create_engine, select, text
 from sqlalchemy.engine import URL
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 from wtforms import StringField, SubmitField
@@ -78,6 +79,20 @@ class Subscriber(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
 def init_db() -> None:
+    # Wait for MySQL to accept connections (important in Docker)
+    deadline = time.time() + int(os.getenv("DB_WAIT_SECONDS", "60"))
+
+    while True:
+        try:
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            break
+        except Exception as e:
+            if time.time() > deadline:
+                raise
+            logger.info("Waiting for database... (%s)", e)
+            time.sleep(2)
+
     Base.metadata.create_all(bind=engine)
 
 class SubscriberForm(FlaskForm):
